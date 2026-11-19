@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Restaurant Finder</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: #faf7f2;
+      color: #2b2b2b;
+    }
+    header {
+      background: #c8451f;
+      color: #fff;
+      padding: 32px 16px 40px;
+      text-align: center;
+    }
+    header h1 { margin: 0 0 6px; font-size: 2rem; }
+    header p { margin: 0 0 20px; opacity: 0.9; }
+    .search-bar {
+      display: flex;
+      gap: 8px;
+      max-width: 640px;
+      margin: 0 auto;
+    }
+    .search-bar input {
+      flex: 1;
+      padding: 14px 16px;
+      font-size: 1rem;
+      border: none;
+      border-radius: 8px;
+    }
+    .search-bar button {
+      padding: 14px 22px;
+      font-size: 1rem;
+      border: none;
+      border-radius: 8px;
+      background: #2b2b2b;
+      color: #fff;
+      cursor: pointer;
+    }
+    .search-bar button:hover { background: #000; }
+    main { max-width: 900px; margin: 0 auto; padding: 20px 16px 48px; }
+    .filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 14px;
+    }
+    .filters select {
+      padding: 8px 10px;
+      border: 1px solid #d6cfc4;
+      border-radius: 6px;
+      background: #fff;
+      font-size: 0.95rem;
+    }
+    #status { margin: 0 0 14px; color: #666; }
+    .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+    .card {
+      background: #fff;
+      border-radius: 10px;
+      padding: 16px;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+    }
+    .card h2 { margin: 0 0 6px; font-size: 1.1rem; }
+    .meta { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .cuisine {
+      font-size: 0.8rem;
+      background: #f3e3dc;
+      color: #8a2f12;
+      padding: 3px 9px;
+      border-radius: 999px;
+    }
+    .rating { font-weight: 600; color: #b36b00; }
+    .address { margin: 0; font-size: 0.9rem; color: #555; }
+    .city { font-weight: 600; }
+    .empty { text-align: center; color: #777; padding: 40px 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Restaurant Finder</h1>
+    <p>Try "best restaurants", "biryani" or "seafood in Chennai"</p>
+    <form class="search-bar" id="searchForm">
+      <input id="searchInput" type="search" placeholder="Search restaurants, cuisines or cities..." autocomplete="off">
+      <button type="submit">Search</button>
+    </form>
+  </header>
+
+  <main>
+    <div class="filters">
+      <label>City
+        <select id="cityFilter"><option value="">All</option></select>
+      </label>
+      <label>Cuisine
+        <select id="cuisineFilter"><option value="">All</option></select>
+      </label>
+      <label>Min rating
+        <select id="ratingFilter">
+          <option value="0">Any</option>
+          <option value="4">4.0+</option>
+          <option value="4.5">4.5+</option>
+        </select>
+      </label>
+    </div>
+    <p id="status">Loading restaurants...</p>
+    <div class="grid" id="results"></div>
+  </main>
+
+  <script>
+    // Words that describe the intent of the search but are not in the data.
+    const STOP_WORDS = new Set([
+      "best", "top", "good", "great", "restaurant", "restaurants",
+      "in", "near", "me", "the", "a", "of", "food", "places", "place"
+    ]);
+
+    let restaurants = [];
+
+    const form = document.getElementById("searchForm");
+    const input = document.getElementById("searchInput");
+    const cityFilter = document.getElementById("cityFilter");
+    const cuisineFilter = document.getElementById("cuisineFilter");
+    const ratingFilter = document.getElementById("ratingFilter");
+    const statusEl = document.getElementById("status");
+    const resultsEl = document.getElementById("results");
+
+    // Parses CSV text into an array of rows (arrays of strings).
+    // Handles quoted fields, commas inside quotes, "" escapes and CRLF line endings.
+    function parseCSV(text) {
+      const rows = [];
+      let row = [];
+      let field = "";
+      let inQuotes = false;
+
+      for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+
+        if (inQuotes) {
+          if (ch === '"') {
+            if (text[i + 1] === '"') { field += '"'; i++; }
+            else { inQuotes = false; }
+          } else {
+            field += ch;
+          }
+        } else if (ch === '"') {
+          inQuotes = true;
+        } else if (ch === ",") {
+          row.push(field);
+          field = "";
+        } else if (ch === "\n" || ch === "\r") {
+          if (ch === "\r" && text[i + 1] === "\n") i++;
+          row.push(field);
+          field = "";
+          rows.push(row);
+          row = [];
+        } else {
+          field += ch;
+        }
+      }
+
+      // Last row when the file does not end with a newline.
+      if (field !== "" || row.length > 0) {
+        row.push(field);
+        rows.push(row);
+      }
+      return rows;
+    }
+
+    // Turns CSV text into objects using the header row as keys.
+    function csvToObjects(text) {
+      const rows = parseCSV(text).filter(r => r.some(cell => cell.trim() !== ""));
+      const headers = rows[0].map(h => h.trim());
+      return rows.slice(1).map(cells => {
+        const obj = {};
+        headers.forEach((h, i) => { obj[h] = (cells[i] || "").trim(); });
+        obj.id = parseInt(obj.id, 10);
+        obj.rating = parseFloat(obj.rating);
+        return obj;
+      });
+    }
+
+    async function loadData() {
+      try {
+        const response = await fetch("restaurants.csv");
+        if (!response.ok) {
+          throw new Error("restaurants.csv not found (HTTP " + response.status + ")");
+        }
+        restaurants = csvToObjects(await response.text());
+        fillFilterOptions();
+        render();
+      } catch (err) {
+        statusEl.textContent =
+          "Could not load restaurants.csv. Make sure it is in the same folder as index.html, " +
+          "and open this page through a local server (run `python -m http.server` in that folder, " +
+          "then visit http://localhost:8000).";
+        console.error(err);
+      }
+    }
+
+    function fillFilterOptions() {
+      const cities = [...new Set(restaurants.map(r => r.city))].sort();
+      const cuisines = [...new Set(restaurants.map(r => r.cuisine))].sort();
+      cities.forEach(c => cityFilter.add(new Option(c, c)));
+      cuisines.forEach(c => cuisineFilter.add(new Option(c, c)));
+    }
+
+    function search() {
+      const tokens = input.value
+        .toLowerCase()
+        .split(/\s+/)
+        .filter(t => t && !STOP_WORDS.has(t));
+
+      const city = cityFilter.value;
+      const cuisine = cuisineFilter.value;
+      const minRating = parseFloat(ratingFilter.value);
+
+      return restaurants
+        .filter(r => {
+          const haystack = (r.name + " " + r.cuisine + " " + r.city + " " + r.address).toLowerCase();
+          // Every remaining word in the query must appear somewhere in the record.
+          return tokens.every(t => haystack.includes(t));
+        })
+        .filter(r => !city || r.city === city)
+        .filter(r => !cuisine || r.cuisine === cuisine)
+        .filter(r => r.rating >= minRating)
+        .sort((a, b) => b.rating - a.rating);
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement("div");
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    function render() {
+      const matches = search();
+      statusEl.textContent = matches.length + (matches.length === 1 ? " restaurant found" : " restaurants found");
+
+      if (matches.length === 0) {
+        resultsEl.innerHTML = '<p class="empty">No restaurants match your search. Try a different word or clear the filters.</p>';
+        return;
+      }
+
+      resultsEl.innerHTML = matches.map(r => `
+        <article class="card">
+          <h2>${escapeHtml(r.name)}</h2>
+          <div class="meta">
+            <span class="cuisine">${escapeHtml(r.cuisine)}</span>
+            <span class="rating">&#9733; ${r.rating.toFixed(1)}</span>
+          </div>
+          <p class="address"><span class="city">${escapeHtml(r.city)}</span> &middot; ${escapeHtml(r.address)}</p>
+        </article>
+      `).join("");
+    }
+
+    form.addEventListener("submit", e => { e.preventDefault(); render(); });
+    input.addEventListener("input", render);
+    [cityFilter, cuisineFilter, ratingFilter].forEach(el => el.addEventListener("change", render));
+
+    loadData();
+  </script>
+</body>
+</html>
